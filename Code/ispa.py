@@ -96,12 +96,13 @@ class ISPA:
                     else:
                         self.fmri_nii_dict[subj] = {run: [{'condition': condition, 'beta': beta, 'image': image}]}
 
-    def run_searchlight(self, output_dir, searchlight_radius=4, n_jobs=-1):
+    def run_searchlight(self, output_dir, mask_path, searchlight_radius=4, n_jobs=-1):
         """
         Run searchlight decoding.
 
         Parameters:
         - output_dir (str): Output directory to save results.
+        - mask_path (str): Path to the brain mask image.
         - searchlight_radius (int): Radius of the searchlight sphere (in voxels).
         - n_jobs (int): Number of parallel jobs for searchlight processing.
         """
@@ -115,7 +116,7 @@ class ISPA:
 
             clf = LogisticRegression()
             searchlight = SearchLight(
-                process_mask_img=_get_process_mask_image(),  # Provide process mask image
+                process_mask_img=self._get_process_mask_image(mask_path),
                 radius=searchlight_radius,
                 n_jobs=n_jobs,
                 verbose=1,
@@ -123,12 +124,12 @@ class ISPA:
                 estimator=clf
             )
 
-            searchlight.fit(_get_all_betas_stand(), y_train)
+            searchlight.fit(self._get_all_betas_stand(), y_train)
 
             score_map = searchlight.scores_ - chance_level
             output_filename = f'ispa_searchlight_accuracy_split{split_ind+1:02d}_of_{n_splits:02d}.nii'
             output_path = os.path.join(output_dir, output_filename)
-            nb.save(nb.Nifti1Image(score_map, _get_resampled_mask_brain()), output_path)
+            nb.save(nb.Nifti1Image(score_map, self._get_resampled_mask_brain(mask_path)), output_path)
 
     def _get_all_betas_stand(self):
         """
@@ -142,12 +143,17 @@ class ISPA:
 
         return concat_imgs(all_images_to_concat)
 
-    def _get_process_mask_image(self):
+    def _get_process_mask_image(self, mask_path):
         """
         Return the process mask image (resampled if necessary).
+
+        Parameters:
+        - mask_path (str): Path to the brain mask image.
+
+        Returns:
+        - process_mask_img (NiBabel image): Resampled brain mask image.
         """
-        mask_brain_path = "/path/to/brain_mask.nii.gz"
-        mask_brain = nb.load(mask_brain_path)
+        mask_brain = nb.load(mask_path)
         beta_img = nb.load(next(iter(self.fmri_nii_dict.values()))[next(iter(self.fmri_nii_dict.values()))][0]['image_path'])
         if not beta_img.shape == mask_brain.shape:
             resampled_mask_brain = nb.resample_to_img(mask_brain, beta_img)
@@ -155,21 +161,41 @@ class ISPA:
         else:
             return mask_brain
 
-    def _get_resampled_mask_brain(self):
+    def _get_resampled_mask_brain(self, mask_path):
         """
         Resample ROI mask image to match beta images.
+
+        Parameters:
+        - mask_path (str): Path to the brain mask image.
+
+        Returns:
+        - resampled_mask_brain (NiBabel image): Resampled brain mask image.
         """
-        mask_brain_path = "/path/to/brain_mask.nii.gz"
-        mask_brain = nb.load(mask_brain_path)
+        mask_brain = nb.load(mask_path)
         beta_img = nb.load(next(iter(self.fmri_nii_dict.values()))[next(iter(self.fmri_nii_dict.values()))][0]['image_path'])
         resampled_mask_brain = nb.resample_to_img(mask_brain, beta_img)
         return resampled_mask_brain
 
+    def run_analysis(self, mask_path, output_dir='output', searchlight_radius=4, n_jobs=-1):
+        """
+        Run full ISPA analysis.
+
+        Parameters:
+        - mask_path (str): Path to the brain mask image.
+        - output_dir (str): Output directory to save results (default: 'output').
+        - searchlight_radius (int): Radius of the searchlight sphere (in voxels) (default: 4).
+        - n_jobs (int): Number of parallel jobs for searchlight processing (default: -1, using all available cores).
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        self.load_data()
+        self._standardize_images()
+        self.run_searchlight(output_dir, mask_path, searchlight_radius, n_jobs)
 
 
 if __name__ == "__main__":
     data_dir = '/path/to/data_directory'
     mask_path = '/path/to/brain_mask.nii.gz'
+    output_dir = '/path/to/output_directory'
 
-    ispa = ISPAAnalysis(data_dir)
-    ispa.run_analysis(mask_path)
+    ispa = ISPA(data_dir)
+    ispa.run_analysis(mask_path, output_dir=output_dir)
