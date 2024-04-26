@@ -7,17 +7,9 @@ from nilearn.masking import apply_mask
 import os
 import numpy as np
 import nibabel as nib
+import scipy.ndimage as ndi
 from sklearn.preprocessing import minmax_scale
 
-
-import numpy as np
-import nibabel as nib
-
-import numpy as np
-import nibabel as nib
-
-import numpy as np
-import nibabel as nib
 
 def divide_brain_mask(mask_path, n_parcellations):
     """
@@ -106,6 +98,9 @@ def calculate_threshold_statistics_maps(image_dir, parcellated_masks, p_value_th
                     accuracy_map_path = os.path.join(image_dir, filename)
                     accuracy_map_img = nib.load(accuracy_map_path)
                     accuracy_map_data = accuracy_map_img.get_fdata()
+                    # Find non-zero indices in the mask
+                    nonzero_indices = np.nonzero(mask_data)
+
 
                     # Get voxel value from accuracy map at current voxel index
                     voxel_value = accuracy_map_data[voxel_idx]
@@ -137,28 +132,184 @@ def store_threshold_statistics_to_nifti(output_path, brain_mask_path, threshold_
     # Save the threshold statistics as a Nifti image
     nib.save(threshold_img, output_path)
 
-# Example usage
-mask_path = '/Users/sebastian.hoefle/projects/idor/brain-analysis/Data/brain_mask.nii.gz'
-image_dir = '/Users/sebastian.hoefle/projects/idor/brain-analysis/Data/ISPA_SearchLight_TB_permut_test/withinsubj_permut_test/permu_mean_group_acc_maps_test'
-n_parcellations = 10  # Adapt this number according to you available memory. More parcellations need less memory
 
-# Divide the brain mask into parcellations
-parcellations = divide_brain_mask(mask_path, n_parcellations)
+def perform_cluster_search_with_size(accuracy_map, threshold_map, brain_mask, connectivity=6):
+    """
+    Perform cluster search and collect cluster sizes using a predefined threshold map within a specified brain mask.
 
-# Save each parcellation mask as a Nifti file
-output_dir = "/Users/sebastian.hoefle/projects/idor/brain-analysis/Data/"
-os.makedirs(output_dir, exist_ok=True)
+    Parameters:
+    - accuracy_map (ndarray): 3D array representing accuracy values at each voxel.
+    - threshold_map (ndarray): 3D array representing threshold values based on empirical chance distribution.
+    - brain_mask (ndarray): 3D array specifying voxels to consider (1 for inclusion, 0 for exclusion).
+    - connectivity (int): Connectivity scheme (6 or 18) for voxel connections.
 
-for i, parcellation_mask in enumerate(parcellations):
-    parcellation_img = nib.Nifti1Image(parcellation_mask.astype(np.uint8), nib.load(mask_path).affine)
-    output_filename = f"parcellation_{i + 1}.nii.gz"
+    Returns:
+    - cluster_map (ndarray): 3D array indicating clusters identified based on threshold and connectivity within the brain mask.
+    - cluster_sizes (dict): Dictionary mapping cluster labels to their sizes.
+    """
+    cluster_map = np.zeros_like(accuracy_map, dtype=int)
+    cluster_sizes = {}
+
+    if connectivity == 6:
+        structuring_element = ndi.generate_binary_structure(3, 1)  # 6-connectivity
+    elif connectivity == 18:
+        structuring_element = ndi.generate_binary_structure(3, 2)  # 18-connectivity
+
+    cluster_label = 1
+
+    for x in range(accuracy_map.shape[0]):
+        for y in range(accuracy_map.shape[1]):
+            for z in range(accuracy_map.shape[2]):
+                if (
+                    brain_mask[x, y, z] == 1  # Check if voxel is within the brain mask
+                    and accuracy_map[x, y, z] > threshold_map[x, y, z]
+                    and cluster_map[x, y, z] == 0
+                ):
+                    # Start a new cluster
+                    cluster_map[x, y, z] = cluster_label
+                    queue = [(x, y, z)]
+                    cluster_size = 0
+
+                    while queue:
+                        vx, vy, vz = queue.pop(0)
+                        cluster_size += 1
+
+                        for dx, dy, dz in np.transpose(np.nonzero(structuring_element)):
+                            nx, ny, nz = vx + dx, vy + dy, vz + dz
+                            if (
+                                0 <= nx < accuracy_map.shape[0]
+                                and 0 <= ny < accuracy_map.shape[1]
+                                and 0 <= nz < accuracy_map.shape[2]
+                                and brain_mask[nx, ny, nz] == 1  # Check if neighboring voxel is within the brain mask
+                                and accuracy_map[nx, ny, nz] > threshold_map[nx, ny, nz]
+                                and cluster_map[nx, ny, nz] == 0
+                            ):
+                                cluster_map[nx, ny, nz] = cluster_label
+                                queue.append((nx, ny, nz))
+
+                    # Store the cluster size
+                    cluster_sizes[cluster_label] = cluster_size
+                    cluster_label += 1
+
+    return cluster_map, cluster_sizes
+
+
+def collect_cluster_sizes(accuracy_maps, threshold_map, p_value_threshold=0.001, connectivity=6):
+    """
+    Apply cluster search to multiple accuracy maps and collect cluster sizes.
+
+    Parameters:
+    - accuracy_maps (list of ndarray): List of 3D arrays representing accuracy maps.
+    - threshold_map (ndarray): 3D array representing threshold values based on empirical chance distribution.
+    - p_value_threshold (float): Desired p-value threshold for including voxels in clusters.
+    - connectivity (int): Connectivity scheme (6 or 18) for voxel connections.
+
+    Returns:
+    - all_cluster_sizes (list of dict): List of dictionaries mapping cluster labels to their sizes for each accuracy map.
+    """
+    all_cluster_sizes = []
+
+    for accuracy_map in accuracy_maps:
+        _, cluster_sizes = perform_cluster_search_with_size(
+            accuracy_map, threshold_map, p_value_threshold, connectivity
+        )
+        all_cluster_sizes.append(cluster_sizes)
+
+    return all_cluster_sizes
+
+
+def process_accuracy_map(map_index, accuracy_map_path, threshold_map, brain_mask_path, connectivity=6):
+    """
+    Process a single accuracy map and save cluster sizes to disk.
+
+    Parameters:
+    - map_index (int): Index of the accuracy map.
+    - accuracy_map_path (str): Path to the accuracy map Nifti image.
+    - threshold_map (ndarray): 3D array representing threshold values based on empirical chance distribution.
+    - brain_mask_path (str): Path to the brain mask Nifti image.
+    - connectivity (int): Connectivity scheme (6 or 18) for voxel connections.
+    """
+    accuracy_map_img = nib.load(accuracy_map_path)
+    accuracy_map_data = accuracy_map_img.get_fdata()
+    brain_mask_img = nib.load(brain_mask_path)
+    brain_mask_data = brain_mask_img.get_fdata()
+
+    cluster_sizes = perform_cluster_search(accuracy_map_data, threshold_map, brain_mask_data, connectivity)
+
+    # Save cluster sizes to disk (or aggregate results)
+    output_filename = f'cluster_sizes_map_{map_index:06d}.txt'
     output_path = os.path.join(output_dir, output_filename)
-    nib.save(parcellation_img, output_path)
-    print(f"Parcellation mask {i + 1} saved to: {output_path}")
+    with open(output_path, 'w') as f:
+        for label, size in cluster_sizes.items():
+            f.write(f'Cluster {label}: Size {size}\n')
 
-# Calculate threshold statistics maps for each parcellation
-threshold_statistics_maps = calculate_threshold_statistics_maps(image_dir, parcellations)
 
-# Store combined threshold statistics map as a Nifti image
-output_path = '/path/to/threshold_statistics_map.nii.gz'
-store_threshold_statistics_to_nifti(output_path, mask_path, threshold_statistics_maps)
+
+def calculate_voxel_wise_threshold_maps(permutation_maps: [List[Path]], mask_path: Path, output_path: Path):
+    # Example usage
+    mask_path = '/Users/sebastian.hoefle/projects/idor/brain-analysis/Data/brain_mask.nii.gz'
+    image_dir = '/Users/sebastian.hoefle/projects/idor/brain-analysis/Data/ISPA_SearchLight_TB_permut_test/withinsubj_permut_test/permu_mean_group_acc_maps_test'
+    n_parcellations = 10  # Adapt this number according to you available memory. More parcellations need less memory
+
+    # Divide the brain mask into parcellations
+    parcellations = divide_brain_mask(mask_path, n_parcellations)
+
+    # Save each parcellation mask as a Nifti file
+    output_dir = "/Users/sebastian.hoefle/projects/idor/brain-analysis/Data/"
+    os.makedirs(output_dir, exist_ok=True)
+
+    for i, parcellation_mask in enumerate(parcellations):
+        parcellation_img = nib.Nifti1Image(parcellation_mask.astype(np.uint8), nib.load(mask_path).affine)
+        output_filename = f"parcellation_{i + 1}.nii.gz"
+        output_path = os.path.join(output_dir, output_filename)
+        nib.save(parcellation_img, output_path)
+        print(f"Parcellation mask {i + 1} saved to: {output_path}")
+
+    # Calculate threshold statistics maps for each parcellation
+    threshold_statistics_maps = calculate_threshold_statistics_maps(image_dir, parcellations)
+
+    # Store combined threshold statistics map as a Nifti image
+    output_path = 'threshold_statistics_map.nii.gz'
+    store_threshold_statistics_to_nifti(output_path, mask_path, threshold_statistics_maps)
+
+
+def calculate_cluster_statistics():
+    accuracy_maps_dir = '/path/to/accuracy_maps'
+    threshold_map_path = '/path/to/threshold_map.nii.gz'
+    brain_mask_path = '/path/to/brain_mask.nii.gz'
+    output_dir = '/path/to/output_directory'
+
+    # List all accuracy map files
+    accuracy_map_files = [os.path.join(accuracy_maps_dir, f) for f in os.listdir(accuracy_maps_dir)
+                          if f.endswith('.nii') or f.endswith('.nii.gz')]
+
+    # Load threshold map and brain mask
+    threshold_map_img = nib.load(threshold_map_path)
+    threshold_map_data = threshold_map_img.get_fdata()
+    brain_mask_img = nib.load(brain_mask_path)
+    brain_mask_data = brain_mask_img.get_fdata()
+
+    # Define connectivity scheme (6 or 18)
+    connectivity = 6
+
+    # Create a pool of worker processes
+    num_processes = mp.cpu_count()
+    pool = mp.Pool(num_processes)
+
+    # Process accuracy maps in parallel
+    results = []
+    for idx, accuracy_map_file in enumerate(accuracy_map_files):
+        result = pool.apply_async(process_accuracy_map, args=(idx, accuracy_map_file, threshold_map_data,
+                                                              brain_mask_path, connectivity))
+        results.append(result)
+
+    # Close the pool and wait for all processes to finish
+    pool.close()
+    pool.join()
+
+    print("All accuracy maps processed.")
+
+
+if __name__ == '__main__':
+    
+    
