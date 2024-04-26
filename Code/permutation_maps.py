@@ -244,6 +244,93 @@ def process_accuracy_map(map_index, accuracy_map_path, threshold_map, brain_mask
             f.write(f'Cluster {label}: Size {size}\n')
 
 
+def compute_cluster_p_values(cluster_sizes_chance, cluster_sizes_original):
+    """
+    Compute cluster-level p-values based on chance and original cluster size records.
+
+    Parameters:
+    - cluster_sizes_chance (list): List of cluster sizes from chance population.
+    - cluster_sizes_original (list): List of cluster sizes from original data.
+
+    Returns:
+    - cluster_p_values (dict): Dictionary mapping cluster sizes to computed p-values.
+    """
+    # Compute normalized histogram (chance record)
+    hist_chance, _ = np.histogram(cluster_sizes_chance, bins='auto', density=True)
+
+    cluster_p_values = {}
+    for s in cluster_sizes_original:
+        # Compute cluster-level p-value
+        p_cluster = np.sum(hist_chance[hist_chance > hist_chance[s]])
+        cluster_p_values[s] = p_cluster
+
+    return cluster_p_values
+
+def apply_fdr_correction(cluster_p_values, alpha=0.05):
+    """
+    Apply step-down False Discovery Rate (FDR) correction to cluster p-values.
+
+    Parameters:
+    - cluster_p_values (dict): Dictionary mapping cluster sizes to computed p-values.
+    - alpha (float): Desired FDR threshold (e.g., 0.05).
+
+    Returns:
+    - cluster_size_threshold (float): Adjusted cluster size threshold based on FDR correction.
+    """
+    sorted_p_values = sorted(cluster_p_values.values())
+    m = len(sorted_p_values)  # Number of comparisons (clusters)
+    adjusted_p_values = [p * m / (i + 1) for i, p in enumerate(sorted_p_values)]
+    
+    # Find largest adjusted p-value <= alpha
+    for i in range(m - 1, -1, -1):
+        if adjusted_p_values[i] <= alpha:
+            cluster_size_threshold = list(cluster_p_values.keys())[i]
+            break
+
+    return cluster_size_threshold
+
+def apply_cluster_threshold(original_accuracy_map, threshold_map, cluster_size_threshold):
+    """
+    Apply cluster size threshold to original accuracy map.
+
+    Parameters:
+    - original_accuracy_map (ndarray): 3D array representing original accuracy values.
+    - threshold_map (ndarray): 3D array representing threshold values based on empirical chance distribution.
+    - cluster_size_threshold (float): Cluster size threshold for significance.
+
+    Returns:
+    - filtered_accuracy_map (ndarray): Filtered accuracy map based on cluster size threshold.
+    """
+    # Apply cluster size threshold to filter clusters
+    filtered_clusters = original_accuracy_map >= cluster_size_threshold
+
+    # Apply voxel-wise p-values to retain significant clusters
+    filtered_accuracy_map = original_accuracy_map * filtered_clusters
+
+    return filtered_accuracy_map
+
+def process_cluster_thresholds():
+    
+    # Example usage (to be integrated with your workflow)
+    cluster_sizes_chance = [...]  # List of cluster sizes from chance population
+    cluster_sizes_original = [...]  # List of cluster sizes from original data
+
+    # Compute cluster-level p-values
+    cluster_p_values = compute_cluster_p_values(cluster_sizes_chance, cluster_sizes_original)
+
+    # Apply FDR correction to determine cluster size threshold
+    cluster_size_threshold = apply_fdr_correction(cluster_p_values)
+
+    # Example: Load original accuracy map and threshold map
+    original_accuracy_map = np.load('original_accuracy_map.npy')
+    threshold_map = np.load('threshold_map.npy')
+
+    # Apply cluster threshold to filter accuracy map
+    filtered_accuracy_map = apply_cluster_threshold(original_accuracy_map, threshold_map, cluster_size_threshold)
+
+    # Example: Save filtered accuracy map
+    np.save('filtered_accuracy_map.npy', filtered_accuracy_map)
+
 
 def calculate_voxel_wise_threshold_maps(permutation_maps: [List[Path]], mask_path: Path, output_path: Path):
     # Example usage
