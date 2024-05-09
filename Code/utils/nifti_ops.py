@@ -1,6 +1,8 @@
+import os
 from pathlib import Path
 
 import nibabel as nib
+import numpy as np
 
 
 def divide_brain_mask(mask_path: Path, n_parcellations: int):
@@ -64,7 +66,7 @@ def get_nifti_images(image_dir, prefix: str = "", absolute: bool = True):
     return files
 
 
-def save_as_nifti(output_path: Path, brain_mask_path: Path, data: ndarray):
+def save_as_nifti(output_path: Path, brain_mask_path: Path, data: np.ndarray):
     """
     Store threshold statistics as a Nifti image using the brain mask.
 
