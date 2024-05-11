@@ -221,3 +221,6 @@ if __name__ == "__main__":
 
     # Generate an accuracy map that fakes some clusters above chance level
     generate_fake_clusters(mask_path, output_directory)
+
+
+    
