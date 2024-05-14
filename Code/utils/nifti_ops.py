@@ -28,12 +28,12 @@ def divide_brain_mask(mask_path: Path, n_parcellations: int):
     mask_data = mask_img.get_fdata()
 
     # Check if the mask is binary
-    if np.array_equal(mask_data, mask_data.astype(bool)):
+    if np.isin(mask_data, [0, 1]).all():
         print("The mask is binary. Moving on with stats")
     else:
         print("The mask is not binary. Binarizing...")
         # Binarize the mask
-        binarized_data = (mask_data > 0).astype(int)
+        binarized_data = (mask_data > 0).astype(bool)
         mask_data = binarized_data
 
     # Find non-zero indices in the mask
