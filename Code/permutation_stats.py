@@ -13,6 +13,37 @@ from sklearn.preprocessing import minmax_scale
 
 from utils.nifti_ops import get_nifti_images, divide_brain_mask, save_as_nifti
 
+import psutil
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+def process_voxel(voxel_idx, accuracy_maps, p_value_threshold):
+    """
+    Process a single voxel index to calculate the threshold statistic.
+    
+    Parameters:
+    - voxel_idx (tuple): The voxel index to process.
+    - accuracy_maps (list of paths): Filepaths of Nifti accuracy maps.
+    - p_value_threshold (float): Desired probability threshold.
+    
+    Returns:
+    - voxel_idx (tuple): The processed voxel index.
+    - threshold_statistic (float): The calculated threshold statistic for the voxel.
+    """
+        
+    voxel_values = []
+
+    for accuracy_map_path in accuracy_maps:
+        accuracy_map_img = nib.load(accuracy_map_path)
+        accuracy_map_data = accuracy_map_img.get_fdata()
+
+        # Get voxel value from accuracy map at current voxel index
+        voxel_value = accuracy_map_data[voxel_idx]
+        voxel_values.append(voxel_value)
+
+    # Calculate the threshold statistic using np.percentile
+    threshold_statistic = np.percentile(voxel_values, 100 * (1 - p_value_threshold))
+
+    return voxel_idx, threshold_statistic
 
 def calculate_threshold_statistics_map(
     accuracy_maps: list, parcellated_masks: list, p_value_threshold: float
@@ -20,12 +51,8 @@ def calculate_threshold_statistics_map(
     """
     Calculate voxel-wise threshold statistics corresponding to a low probability across multiple maps and parcellated masks.
 
-    Reference:
-    Johannes Stelzer, Yi Chen, Robert Turner,
-    Statistical inference and multiple testing correction in classification-based multi-voxel pattern analysis (MVPA): Random permutations and cluster size control, NeuroImage, Volume 65, 2013, Pages 69-82, ISSN 1053-8119, https://doi.org/10.1016/j.neuroimage.2012.09.063.
-
     Parameters:
-    - accuracy_maps (list of paths): Filepaths of Nifti accuracy.
+    - accuracy_maps (list of paths): Filepaths of Nifti accuracy maps.
     - parcellated_masks (list of ndarray): List of parcellated masks (arrays of voxel indices).
     - p_value_threshold (float): Desired probability threshold.
 
@@ -35,37 +62,31 @@ def calculate_threshold_statistics_map(
     # Initialize an empty map to store threshold statistics
     threshold_statistics_map = np.zeros_like(parcellated_masks[0], dtype=float)
 
-    # Iterate over each parcellated mask
+    # Collect all voxel indices to process
+    voxel_indices_to_process = []
     for mask_idx, mask in enumerate(parcellated_masks):
-        # Get voxel coordinates where mask is True using np.nonzero
         voxel_indices = np.nonzero(mask)
+        voxel_indices_to_process.extend(zip(*voxel_indices))
         print(f"Mask {mask_idx} with {len(voxel_indices[0])} voxels.")
 
-        # Get memory usage in bytes
-        import psutil
-        memory_usage_bytes = psutil.Process().memory_info().rss
-        print(f"Memory usage: {memory_usage_bytes/1024**2} MB")
+    # Get memory usage in bytes
+    memory_usage_bytes = psutil.Process().memory_info().rss
+    print(f"Memory usage: {memory_usage_bytes / 1024**2} MB")
 
-        # Iterate over voxel coordinates
-        for voxel_idx in zip(*voxel_indices):
-            voxel_values = []
+    # Determine the number of available CPUs and subtract 5
+    num_cpus = os.cpu_count() - 5
+    if num_cpus < 1:
+        num_cpus = 1  # Ensure at least one CPU is used
 
-            # Load accuracy maps from image directory
-            for accuracy_map_path in accuracy_maps:
-                accuracy_map_img = nib.load(accuracy_map_path)
-                accuracy_map_data = accuracy_map_img.get_fdata()
+    print(f"Using {num_cpus} CPUs for processing")
 
-                # Get voxel value from accuracy map at current voxel index
-                voxel_value = accuracy_map_data[voxel_idx]
-                voxel_values.append(voxel_value)
-
-            # Calculate the threshold statistic using np.percentile
-            threshold_statistic = np.percentile(
-                voxel_values, 100 * (1 - p_value_threshold)
-            )
-
-            # Store the threshold statistic in the map at the current voxel index
+    # Use ProcessPoolExecutor to process voxels in parallel
+    with ProcessPoolExecutor(max_workers=num_cpus) as executor:
+        futures = {executor.submit(process_voxel, voxel_idx, accuracy_maps, p_value_threshold): voxel_idx for voxel_idx in voxel_indices_to_process}
+        for future in as_completed(futures):
+            voxel_idx, threshold_statistic = future.result()
             threshold_statistics_map[voxel_idx] = threshold_statistic
+            print(f"Storing threshold statistic for voxel: {voxel_idx}")
 
     return threshold_statistics_map
 
