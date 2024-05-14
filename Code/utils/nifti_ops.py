@@ -19,7 +19,22 @@ def divide_brain_mask(mask_path: Path, n_parcellations: int):
 
     # Load the brain mask
     mask_img = nib.load(mask_path)
+    
+    # Check whether mask and accuracy maps are in the same space and resample if necessary
+    if not accuracy_map.shape == mask_img.shape:
+        mask_img = resample_to_img(mask_img, accuracy_map, interpolation='nearest')
+        print("Mask resampled to match the beta images.")
+    
     mask_data = mask_img.get_fdata()
+
+    # Check if the mask is binary
+    if np.array_equal(mask_data, mask_data.astype(bool)):
+        print("The mask is binary. Moving on with stats")
+    else:
+        print("The mask is not binary. Binarizing...")
+        # Binarize the mask
+        binarized_data = (mask_data > 0).astype(int)
+        mask_data = binarized_data
 
     # Find non-zero indices in the mask
     nonzero_indices = np.nonzero(mask_data)
